@@ -102,8 +102,6 @@ export default function PDFReaderPage() {
   const [selectedPdfId, setSelectedPdfId] = useState<number | string | null>(null) // Use ID
   const [searchTerm, setSearchTerm] = useState("")
   const [annotations, setAnnotations] = useState<Annotation[]>([]) // Use the new union type
-  const [isAddingAnnotation, setIsAddingAnnotation] = useState(false)
-  const [newAnnotationText, setNewAnnotationText] = useState("")
   const fileInputRef = useRef<HTMLInputElement>(null)
   const [isLoading, setIsLoading] = useState(true) // Add loading state
   const [error, setError] = useState<string | null>(null) // Add error state
@@ -262,66 +260,7 @@ export default function PDFReaderPage() {
     setSelectionPopover(null);
   }, [selectedDocument?.fileUrl]);
 
-  // Handle adding TEXT annotations (adjust position calculation if needed)
-  const handleAddTextAnnotation = async (e: React.MouseEvent<HTMLDivElement>) => {
-    // Ensure click is on the viewer area and we are adding a text note
-    const targetElement = e.target as HTMLElement;
-    if (!isAddingAnnotation || !selectedPdfId || !targetElement.classList.contains('pdf-annotation-layer')) {
-        return;
-    }
-    // Prevent adding text note if text is selected (user might want to highlight)
-    if (selectedText) {
-        return;
-    }
-
-    const pageElement = targetElement.closest('.react-pdf__Page') as HTMLElement | null;
-    if (!pageElement) {
-        console.error("Could not determine page element from click");
-        return;
-    }
-    const pageNumberStr = pageElement.dataset.pageNumber;
-    if (!pageNumberStr) {
-         console.error("Could not determine page number from click target");
-         return;
-    }
-    const pageNumber = parseInt(pageNumberStr, 10);
-    const pageRect = pageElement.getBoundingClientRect();
-
-    // Calculate relative position within the page
-    const x = ((e.clientX - pageRect.left) / pageRect.width) * 100;
-    const y = ((e.clientY - pageRect.top) / pageRect.height) * 100;
-
-    const newAnnotationData = {
-      type: 'text' as const, // Specify type
-      pdfDocumentId: selectedPdfId,
-      page: pageNumber, // Use determined page number
-      text: newAnnotationText || "Note",
-      position: { x, y },
-    };
-
-    try {
-      console.log("Saving TEXT annotation via API:", newAnnotationData);
-      const response = await fetch(`/api/pdfs/${selectedPdfId}/annotations`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(newAnnotationData),
-      });
-      if (!response.ok) {
-         let errorMsg = 'Failed to save annotation';
-         try { const errorData = await response.json(); errorMsg = errorData.error || errorMsg; } catch (parseError) {}
-         throw new Error(errorMsg);
-      }
-      const savedAnnotation: Annotation = await response.json();
-      const formattedAnnotation = { ...savedAnnotation, id: String(savedAnnotation.id), type: 'text' } as TextAnnotation;
-      setAnnotations(prevAnnotations => [...prevAnnotations, formattedAnnotation]);
-      setIsAddingAnnotation(false);
-      setNewAnnotationText("");
-    } catch (err) {
-       console.error("Error saving text annotation:", err);
-       setError(err instanceof Error ? `Save Error: ${err.message}` : "Failed to save annotation");
-    }
-  };
-
+  // Handle uploading a new PDF
   const handleUploadClick = () => {
     fileInputRef.current?.click()
   }
@@ -415,13 +354,6 @@ export default function PDFReaderPage() {
 
   // --- New Handler: Detect Text Selection ---
   const handleMouseUp = useCallback(() => {
-    // Don't show popover if adding text notes
-    if (isAddingAnnotation) {
-        setSelectionPopover(null);
-        setSelectedText(null);
-        return;
-    }
-
     const selection = window.getSelection();
     if (selection && !selection.isCollapsed && selection.rangeCount > 0) {
       const range = selection.getRangeAt(0);
@@ -452,7 +384,7 @@ export default function PDFReaderPage() {
       setSelectedText(null);
       setSelectionPopover(null);
     }
-  }, [isAddingAnnotation]); // Depend on isAddingAnnotation
+  }, []);
 
   // --- New Handler: Create Highlight Annotation ---
   const handleHighlightSelection = async () => {
@@ -632,9 +564,6 @@ export default function PDFReaderPage() {
             <Button variant="outline" size="icon" className="h-8 w-8" onClick={handleZoomIn} disabled={scale >= 3.0}>
               <ZoomIn className="h-4 w-4" /><span className="sr-only">Zoom In</span>
             </Button>
-            <Button variant="outline" size="sm" onClick={() => setIsAddingAnnotation(!isAddingAnnotation)}>
-              {isAddingAnnotation ? "Cancel Note" : "Add Note"}
-            </Button>
             <Button
               variant="outline" size="icon" className="h-8 w-8"
               onClick={() => window.open(`/api/pdfs/${selectedPdfId}/download`, '_blank')}
@@ -647,20 +576,6 @@ export default function PDFReaderPage() {
               <span className="sr-only">{isFullscreen ? "Exit Fullscreen" : "Enter Fullscreen"}</span>
             </Button>
           </div>
-
-          {isAddingAnnotation && (
-            <div className="p-3 bg-muted border-b flex-shrink-0">
-              <Label htmlFor="annotation-text" className="mb-2 block">Add Note</Label>
-              <Textarea
-                id="annotation-text"
-                placeholder="Enter note text here, then click on the page to place it..."
-                value={newAnnotationText}
-                onChange={(e) => setNewAnnotationText(e.target.value)}
-                className="mb-2"
-              />
-              <p className="text-xs text-muted-foreground">Click on the desired page to place your note</p>
-            </div>
-          )}
 
           <div
             ref={viewerContainerRef}
@@ -724,16 +639,11 @@ export default function PDFReaderPage() {
                       scale={scale}
                       className="mb-2"
                     />
-                    {isAddingAnnotation && (
-                      <div
-                        className="absolute inset-0 pdf-annotation-layer cursor-crosshair"
-                        onClick={handleAddTextAnnotation}
-                        data-page-number={index + 1}
-                      />
-                    )}
+                    {/* Keep Annotation Rendering Logic, remove only Add Note Layer */}
                     {annotations
                       .filter((a) => a.page === (index + 1) && String(a.pdfDocumentId) === String(selectedPdfId))
                       .map((annotation) => {
+                        // Keep rendering for TextAnnotation and HighlightAnnotation
                         if (isTextAnnotation(annotation)) {
                           const { id, page, position, text } = annotation;
                           const key = id || `${page}-${position.x}-${position.y}`;
