@@ -18,8 +18,10 @@ export async function updateSession(request: NextRequest) {
           return request.cookies.get(name)?.value
         },
         set(name: string, value: string, options: CookieOptions) {
+          // If the cookie is updated, update the request cookies and re-create the response
+          // to have the modified cookies attached.
           request.cookies.set({ name, value, ...options })
-          response = NextResponse.next({ // Create new response to attach cookie
+          response = NextResponse.next({
             request: {
               headers: request.headers,
             },
@@ -27,8 +29,10 @@ export async function updateSession(request: NextRequest) {
           response.cookies.set({ name, value, ...options })
         },
         remove(name: string, options: CookieOptions) {
+          // If the cookie is removed, update the request cookies and re-create the response
+          // to have the modified cookies attached.
           request.cookies.set({ name, value: '', ...options })
-           response = NextResponse.next({ // Create new response to attach cookie
+          response = NextResponse.next({
             request: {
               headers: request.headers,
             },
@@ -39,20 +43,25 @@ export async function updateSession(request: NextRequest) {
     }
   )
 
-  // Refresh session if expired - important for Server Components
-  // await supabase.auth.getUser() // Deprecated, use getSession instead if needed here, but usually handled by accessing user below
+  // Refresh session if expired - important!
+  const { data: { user } } = await supabase.auth.getUser();
 
-  // Optional: Check if user is logged in (can be used for route protection)
-   const { data: { user } } = await supabase.auth.getUser();
+  // Define public and protected routes
+  const publicPaths = ['/login', '/auth/callback']; // Add any other public paths like /sign-up
+  const pathname = request.nextUrl.pathname;
 
-  // Example: Redirect to login if trying to access protected route and not logged in
-  // Adjust '/pdf-reader' to your protected route path
-  // if (!user && request.nextUrl.pathname.startsWith('/pdf-reader')) {
-  //    const loginUrl = new URL('/login', request.url)
-  //    loginUrl.searchParams.set('redirectedFrom', request.nextUrl.pathname) // Optional: pass redirect path
-  //    return NextResponse.redirect(loginUrl);
-  // }
+  // Check if the current path is public
+  const isPublicPath = publicPaths.some(path => pathname.startsWith(path));
 
+  // If it's not a public path and the user is not logged in, redirect to login
+  if (!isPublicPath && !user) {
+    const loginUrl = new URL('/login', request.url);
+    // Optional: Add a redirect query param
+    // loginUrl.searchParams.set('redirectedFrom', pathname);
+    console.log(`Redirecting unauthenticated user from ${pathname} to /login`);
+    return NextResponse.redirect(loginUrl);
+  }
 
+  // If it's a public path, or the user is logged in, allow the request
   return response
 } 
