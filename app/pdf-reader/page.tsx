@@ -3,8 +3,9 @@
 import type React from "react"
 import { useState, useRef, useEffect, useCallback } from "react"
 import Link from "next/link"
-import { ArrowLeft, BookOpen, ChevronLeft, ChevronRight, Download, File, Loader2, Plus, Search, Upload, Highlighter } from "lucide-react"
+import { ArrowLeft, BookOpen, ChevronLeft, ChevronRight, Download, File, Loader2, Plus, Search, Upload, Highlighter, ZoomIn, ZoomOut, Expand, Minimize, Trash2 } from "lucide-react"
 import { Document, Page, pdfjs } from 'react-pdf'
+import { useFullscreen } from 'react-use'
 
 // Original ESM imports (commented out, using CDN link in layout instead)
 import 'react-pdf/dist/esm/Page/AnnotationLayer.css';
@@ -29,6 +30,17 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Textarea } from "@/components/ui/textarea"
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog"
 
 // Configure PDF.js worker
 // Use the version from the installed pdfjs-dist package
@@ -39,7 +51,7 @@ interface PdfDocument {
   id: number | string // Use string if IDs come from a DB
   title: string
   category: string
-  pages: number
+  pages?: number | null // Make pages optional or allow null
   lastOpened: string // Keep as string for simplicity, or use Date
   thumbnail?: string // Make optional as it might not always exist
   fileUrl?: string // Add fileUrl to the interface
@@ -100,6 +112,28 @@ export default function PDFReaderPage() {
   const [selectedText, setSelectedText] = useState<string | null>(null);
   const [selectionPopover, setSelectionPopover] = useState<{ top: number, left: number, range: Range } | null>(null);
   const viewerContainerRef = useRef<HTMLDivElement>(null); // Ref for the main PDF container div
+  const [scale, setScale] = useState(1.0); // Initial scale
+  const viewerWrapperRef = useRef<HTMLDivElement>(null); // Ref for the outermost viewer wrapper for fullscreen
+  const isFullscreen = useFullscreen(viewerWrapperRef, false);
+  const [isDeleting, setIsDeleting] = useState<string | null>(null);
+
+  const toggleFullscreen = useCallback(() => {
+      if (!viewerWrapperRef.current) {
+          console.error("Viewer wrapper ref not available for fullscreen toggle.");
+          return;
+      }
+      if (!isFullscreen) {
+          // Enter fullscreen
+          viewerWrapperRef.current.requestFullscreen()
+              .catch(err => console.error(`Error attempting to enable full-screen mode: ${err.message} (${err.name})`));
+      } else {
+          // Exit fullscreen - check if element is actually fullscreen first
+          if (document.fullscreenElement) {
+              document.exitFullscreen()
+                  .catch(err => console.error(`Error attempting to exit full-screen mode: ${err.message} (${err.name})`));
+          }
+      }
+  }, [isFullscreen]);
 
   // Fetch documents from backend on mount
   useEffect(() => {
@@ -497,6 +531,22 @@ export default function PDFReaderPage() {
     }
   };
 
+  // --- New Zoom Handlers ---
+  const handleZoomIn = () => setScale(prevScale => Math.min(prevScale + 0.2, 3.0)); // Max zoom 300%
+  const handleZoomOut = () => setScale(prevScale => Math.max(prevScale - 0.2, 0.5)); // Min zoom 50%
+
+  // --- Delete Handler (handleDeletePdf) ---
+  const handleDeletePdf = async (docId: string | number, docTitle: string) => {
+    setIsDeleting(String(docId));
+    setError(null);
+    try {
+      const response = await fetch(`/api/pdfs/${docId}`, { method: 'DELETE' });
+      if (!response.ok) { /* ... error handling ... */ }
+      setLibraryDocuments(prevDocs => prevDocs.filter(doc => String(doc.id) !== String(docId)));
+    } catch (err) { /* ... error handling ... */ }
+     finally { setIsDeleting(null); }
+  };
+
   // Handle loading state
   if (isLoading) {
     // Optional: Replace with a proper skeleton loader component
@@ -504,13 +554,13 @@ export default function PDFReaderPage() {
   }
 
   // Handle error state
-  if (error) {
+  if (error && !selectedPdfId) {
     return <div className="container mx-auto max-w-4xl py-6 text-center text-red-600">Error: {error}</div>;
   }
 
   return (
-    <div className="container mx-auto max-w-4xl py-6">
-      <div className="mb-6 flex items-center justify-between">
+    <div className="container mx-auto max-w-4xl py-6 flex flex-col h-screen"> {/* Adjust height if needed */}
+      <div className="mb-6 flex items-center justify-between flex-shrink-0">
         <div className="flex items-center">
           <Button variant="ghost" size="icon" asChild className="mr-2">
             <Link href="/">
@@ -566,193 +616,177 @@ export default function PDFReaderPage() {
       </div>
 
       {selectedPdfId && selectedDocument ? (
-        <div className="grid gap-6">
-          <Card>
-            <CardHeader className="flex flex-row items-center">
-              <div>
-                <Button variant="ghost" size="sm" onClick={handleBackToLibrary} className="mb-2 -ml-2">
-                  <ChevronLeft className="mr-1 h-4 w-4" />
-                  Back to Library
-                </Button>
-                <CardTitle>{selectedDocument?.title || "Loading..."}</CardTitle>
-                <CardDescription>
-                  Total Pages: {numPages ?? '?'}
-                </CardDescription>
-              </div>
-              <div className="ml-auto flex gap-2">
-                <Button variant="outline" size="sm" onClick={() => setIsAddingAnnotation(!isAddingAnnotation)}>
-                  {isAddingAnnotation ? "Cancel Note" : "Add Note"}
-                </Button>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => window.open(`/api/pdfs/${selectedPdfId}/download`, '_blank')}
-                  disabled={!selectedDocument?.fileUrl}
-                >
-                  <Download className="h-4 w-4" />
-                  <span className="sr-only">Download</span>
-                </Button>
-              </div>
-            </CardHeader>
-            <CardContent>
-              {isAddingAnnotation && (
-                <div className="mb-4 p-3 bg-muted rounded-md">
-                  <Label htmlFor="annotation-text" className="mb-2 block">
-                    Add Note
-                  </Label>
-                  <Textarea
-                    id="annotation-text"
-                    placeholder="Enter your note here..."
-                    value={newAnnotationText}
-                    onChange={(e) => setNewAnnotationText(e.target.value)}
-                    className="mb-2"
-                  />
-                  <p className="text-xs text-muted-foreground">Click on the desired page to place your note</p>
-                </div>
-              )}
+        <div ref={viewerWrapperRef} className="flex flex-col flex-grow border rounded-md overflow-hidden bg-background">
+          <div className="flex items-center gap-2 p-2 border-b bg-muted flex-shrink-0 sticky top-0 z-30">
+            <Button variant="ghost" size="sm" onClick={handleBackToLibrary} className="mr-2">
+              <ChevronLeft className="mr-1 h-4 w-4" />
+              Library
+            </Button>
+            <span className="font-semibold truncate mr-auto" title={selectedDocument.title}>
+              {selectedDocument.title}
+            </span>
+            <Button variant="outline" size="icon" className="h-8 w-8" onClick={handleZoomOut} disabled={scale <= 0.5}>
+              <ZoomOut className="h-4 w-4" /><span className="sr-only">Zoom Out</span>
+            </Button>
+            <span className="text-sm font-medium w-12 text-center">{(scale * 100).toFixed(0)}%</span>
+            <Button variant="outline" size="icon" className="h-8 w-8" onClick={handleZoomIn} disabled={scale >= 3.0}>
+              <ZoomIn className="h-4 w-4" /><span className="sr-only">Zoom In</span>
+            </Button>
+            <Button variant="outline" size="sm" onClick={() => setIsAddingAnnotation(!isAddingAnnotation)}>
+              {isAddingAnnotation ? "Cancel Note" : "Add Note"}
+            </Button>
+            <Button
+              variant="outline" size="icon" className="h-8 w-8"
+              onClick={() => window.open(`/api/pdfs/${selectedPdfId}/download`, '_blank')}
+              disabled={!selectedDocument?.fileUrl}
+            >
+              <Download className="h-4 w-4" /><span className="sr-only">Download</span>
+            </Button>
+            <Button variant="outline" size="icon" className="h-8 w-8" onClick={toggleFullscreen}>
+              {isFullscreen ? <Minimize className="h-4 w-4" /> : <Expand className="h-4 w-4" />}
+              <span className="sr-only">{isFullscreen ? "Exit Fullscreen" : "Enter Fullscreen"}</span>
+            </Button>
+          </div>
 
+          {isAddingAnnotation && (
+            <div className="p-3 bg-muted border-b flex-shrink-0">
+              <Label htmlFor="annotation-text" className="mb-2 block">Add Note</Label>
+              <Textarea
+                id="annotation-text"
+                placeholder="Enter note text here, then click on the page to place it..."
+                value={newAnnotationText}
+                onChange={(e) => setNewAnnotationText(e.target.value)}
+                className="mb-2"
+              />
+              <p className="text-xs text-muted-foreground">Click on the desired page to place your note</p>
+            </div>
+          )}
+
+          <div
+            ref={viewerContainerRef}
+            className="relative overflow-auto bg-gray-100 pdf-viewer-container flex-grow"
+            onMouseUp={handleMouseUp}
+          >
+            {pdfLoadError && (
+              <div className="absolute inset-0 flex flex-col items-center justify-center text-center text-red-600 p-4 z-10 bg-gray-100/90">
+                <p className="font-semibold mb-2">Error Loading PDF</p>
+                <p className="text-sm">{pdfLoadError}</p>
+              </div>
+            )}
+
+            {selectionPopover && (
               <div
-                ref={viewerContainerRef} // Add ref here
-                className="relative border rounded-md overflow-auto bg-gray-100 pdf-viewer-container"
-                style={{ height: "700px" }} // Keep height or adjust as needed for scrolling
-                onMouseUp={handleMouseUp} // Add mouseup listener
+                className="absolute z-20 bg-background border rounded-md shadow-lg p-1 flex items-center gap-1"
+                style={{
+                  top: `${selectionPopover.top}px`,
+                  left: `${selectionPopover.left}px`,
+                  transform: 'translateX(-50%)',
+                }}
+                onMouseDown={(e) => e.preventDefault()}
+                onMouseUp={(e) => e.stopPropagation()}
               >
-                {/* --- Selection Popover --- */}
-                {selectionPopover && (
-                    <div
-                        className="absolute z-20 bg-background border rounded-md shadow-lg p-1 flex items-center gap-1"
-                        style={{
-                            top: `${selectionPopover.top}px`,
-                            left: `${selectionPopover.left}px`,
-                            transform: 'translateX(-50%)', // Center the popover above the middle of selection
-                        }}
-                        // Prevent mouseup on the popover from clearing the selection
-                        onMouseDown={(e) => e.preventDefault()}
-                        onMouseUp={(e) => e.stopPropagation()}
-                    >
-                        <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={handleHighlightSelection}
-                            className="p-1 h-auto"
-                        >
-                            <Highlighter className="h-4 w-4 mr-1" />
-                            Highlight
-                        </Button>
-                        {/* Add other actions like 'Copy' if needed */}
-                    </div>
-                )}
-
-                {pdfLoadError ? (
-                  <div className="absolute inset-0 flex flex-col items-center justify-center text-center text-red-600 p-4">
-                     <p className="font-semibold mb-2">Error Loading PDF</p>
-                     <p className="text-sm">{pdfLoadError}</p>
-                  </div>
-                ) : selectedDocument.fileUrl ? (
-                   <Document
-                     file={selectedDocument.fileUrl}
-                     onLoadSuccess={onDocumentLoadSuccess}
-                     onLoadError={onDocumentLoadError}
-                     loading={
-                        <div className="absolute inset-0 flex items-center justify-center text-muted-foreground">
-                           <Loader2 className="h-8 w-8 animate-spin mr-2" /> Loading PDF...
-                        </div>
-                     }
-                     error={
-                        <div className="absolute inset-0 flex items-center justify-center text-red-600">
-                           Error loading PDF document.
-                        </div>
-                     }
-                     className="flex flex-col items-center" // Use flex-col for pages to stack vertically
-                   >
-                     {/* Loop through pages instead of rendering a single one */}
-                     {numPages && Array.from(new Array(numPages), (el, index) => (
-                       <div key={`page_container_${index + 1}`} className="pdf-page-container relative mb-4 shadow-md"> {/* Add margin between pages */}
-                         <Page
-                             key={`page_${index + 1}`}
-                             pageNumber={index + 1}
-                             renderTextLayer={true}
-                             renderAnnotationLayer={false} // Only this one
-                             className="mb-2" // Add some spacing below each page if needed
-                         />
-                          {/* Annotation layer for click detection */}
-                         {isAddingAnnotation && (
-                            <div
-                              className="absolute inset-0 pdf-annotation-layer cursor-crosshair" // Use this class for target check
-                              onClick={handleAddTextAnnotation}
-                              data-page-number={index + 1} // Add page number data attribute
-                            />
-                         )}
-
-                         {/* Render custom annotations for this specific page */}
-                         {annotations
-                          .filter((a) => a.page === (index + 1) && a.pdfDocumentId === selectedPdfId)
-                          .map((annotation) => {
-                              if (isTextAnnotation(annotation)) {
-                                  // Access properties safely *after* type check
-                                  const { id, page, position, text } = annotation;
-                                  const key = id || `${page}-${position.x}-${position.y}`;
-                                  // Render Text Annotation (positioning is relative to page container)
-                                  return (
-                                   <div
-                                       key={key}
-                                       className="absolute bg-yellow-200 p-2 rounded shadow-md text-xs max-w-[200px] cursor-default z-10 pointer-events-auto"
-                                       style={{
-                                           left: `${position.x}%`,
-                                           top: `${position.y}%`,
-                                           transform: "translate(-50%, -50%)", // Keep transform or adjust as needed
-                                       }}
-                                       onClick={(e) => e.stopPropagation()} // Prevent triggering add annotation
-                                       title={`Page ${page}: ${text}`}
-                                   >
-                                       {text}
-                                   </div>
-                                  );
-                              } else if (isHighlightAnnotation(annotation)) {
-                                   // Access properties safely *after* type check
-                                   const { id, page, rects } = annotation;
-                                   // Render Highlight Annotation(s) (positioning is relative to page container)
-                                   return rects.map((rect, index) => {
-                                       const key = `${id || 'highlight'}-${page}-${index}`;
-                                       // --- Revert experimental height/top adjustment ---
-                                       // const adjustedHeightPercent = rect.height * 0.95;
-                                       // const topAdjustment = (rect.height - adjustedHeightPercent) / 2;
-                                       // const adjustedTopPercent = rect.top + topAdjustment;
-                                       // ---------------------------------------------------
-                                       return (
-                                           <div
-                                               key={key}
-                                               className="absolute bg-yellow-400 bg-opacity-50 pointer-events-none z-5"
-                                               style={{
-                                                   left: `${rect.left}%`,
-                                                   // Use original values:
-                                                   top: `${rect.top}%`,
-                                                   width: `${rect.width}%`,
-                                                   height: `${rect.height}%`,
-                                                   // Try 'darken' blend mode:
-                                                   mixBlendMode: 'darken', // Changed from 'multiply'
-                                               }}
-                                               title={`Page ${page}: Highlighted text`}
-                                           />
-                                       );
-                                   });
-                              }
-                              return null; // Should not happen with current types
-                          })}
-                       </div>
-                     ))}
-                   </Document>
-                ) : (
-                  <div className="absolute inset-0 flex items-center justify-center text-muted-foreground">
-                     <p>No PDF file associated with this document.</p>
-                  </div>
-                )}
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={handleHighlightSelection}
+                  className="p-1 h-auto"
+                >
+                  <Highlighter className="h-4 w-4 mr-1" />
+                  Highlight
+                </Button>
               </div>
-            </CardContent>
-          </Card>
+            )}
+
+            {selectedDocument.fileUrl && !pdfLoadError ? (
+              <Document
+                file={selectedDocument.fileUrl}
+                onLoadSuccess={onDocumentLoadSuccess}
+                onLoadError={onDocumentLoadError}
+                loading={
+                  <div className="absolute inset-0 flex items-center justify-center text-muted-foreground">
+                    <Loader2 className="h-8 w-8 animate-spin mr-2" /> Loading PDF...
+                  </div>
+                }
+                error={
+                  <div className="absolute inset-0 flex items-center justify-center text-red-600">
+                    Error loading PDF document.
+                  </div>
+                }
+                className="flex flex-col items-center py-4"
+              >
+                {numPages && Array.from(new Array(numPages), (el, index) => (
+                  <div key={`page_container_${index + 1}`} className="pdf-page-container relative mb-4 shadow-md bg-white">
+                    <Page
+                      key={`page_${index + 1}`}
+                      pageNumber={index + 1}
+                      renderTextLayer={true}
+                      renderAnnotationLayer={false}
+                      scale={scale}
+                      className="mb-2"
+                    />
+                    {isAddingAnnotation && (
+                      <div
+                        className="absolute inset-0 pdf-annotation-layer cursor-crosshair"
+                        onClick={handleAddTextAnnotation}
+                        data-page-number={index + 1}
+                      />
+                    )}
+                    {annotations
+                      .filter((a) => a.page === (index + 1) && String(a.pdfDocumentId) === String(selectedPdfId))
+                      .map((annotation) => {
+                        if (isTextAnnotation(annotation)) {
+                          const { id, page, position, text } = annotation;
+                          const key = id || `${page}-${position.x}-${position.y}`;
+                          return (
+                            <div
+                              key={key}
+                              className="absolute bg-yellow-200 p-2 rounded shadow-md text-xs max-w-[200px] cursor-default z-10 pointer-events-auto"
+                              style={{
+                                left: `${position.x}%`,
+                                top: `${position.y}%`,
+                                transform: "translate(-50%, -50%)",
+                              }}
+                              onClick={(e) => e.stopPropagation()}
+                              title={`Page ${page}: ${text}`}
+                            >
+                              {text}
+                            </div>
+                          );
+                        } else if (isHighlightAnnotation(annotation)) {
+                          const { id, page, rects } = annotation;
+                          return rects.map((rect, index) => {
+                            const key = `${id || 'highlight'}-${page}-${index}`;
+                            return (
+                              <div
+                                key={key}
+                                className="absolute bg-yellow-400 bg-opacity-50 pointer-events-none z-5"
+                                style={{
+                                  left: `${rect.left}%`,
+                                  top: `${rect.top}%`,
+                                  width: `${rect.width}%`,
+                                  height: `${rect.height}%`,
+                                  mixBlendMode: 'darken',
+                                }}
+                                title={`Page ${page}: Highlighted text`}
+                              />
+                            );
+                          });
+                        }
+                        return null;
+                      })}
+                  </div>
+                ))}
+              </Document>
+            ) : (!pdfLoadError && (
+              <div className="absolute inset-0 flex items-center justify-center text-muted-foreground">
+                <p>No PDF file associated with this document.</p>
+              </div>
+            ))}
+          </div>
         </div>
       ) : (
-        <div className="grid gap-6">
+        <div className="grid gap-6 flex-grow overflow-auto">
+          {error && <p className="col-span-full text-red-500 text-center">{error}</p>}
           <div className="flex items-center gap-4">
             <div className="relative flex-1 max-w-sm">
               <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
@@ -774,12 +808,12 @@ export default function PDFReaderPage() {
               <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
                 {filteredDocuments.length > 0 ? (
                   filteredDocuments.map((doc) => (
-                    <Card key={doc.id} className="overflow-hidden group">
+                    <Card key={doc.id} className="overflow-hidden group flex flex-col">
                       <CardHeader className="p-4 pb-0">
                         <CardTitle className="text-base line-clamp-1">{doc.title}</CardTitle>
                         <CardDescription>{doc.category}</CardDescription>
                       </CardHeader>
-                      <CardContent className="p-4">
+                      <CardContent className="p-4 flex-grow">
                         <div className="flex justify-center mb-3 aspect-[3/4] bg-muted rounded-md overflow-hidden">
                           {doc.thumbnail ? (
                             <img src={doc.thumbnail} alt={doc.title} className="object-cover w-full h-full" />
@@ -789,16 +823,44 @@ export default function PDFReaderPage() {
                             </div>
                           )}
                         </div>
-                        <div className="flex justify-between text-sm text-muted-foreground">
-                          <span>{doc.pages} pages</span>
+                        <div className="flex justify-between text-sm text-muted-foreground mt-2">
+                          <span>{doc.pages ?? '?'} pages</span>
                           <span>Opened: {new Date(doc.lastOpened).toLocaleDateString()}</span>
                         </div>
                       </CardContent>
-                      <CardFooter className="border-t bg-muted/50 p-3">
-                        <Button size="sm" className="w-full" onClick={() => handleOpenPdf(doc.id)}>
+                      <CardFooter className="border-t bg-muted/50 p-3 flex gap-2">
+                        <Button size="sm" className="flex-1" onClick={() => handleOpenPdf(doc.id)}>
                           <BookOpen className="mr-2 h-4 w-4" />
                           Open
                         </Button>
+                        <AlertDialog>
+                          <AlertDialogTrigger asChild>
+                            <Button
+                              variant="destructive" size="sm" className="px-3"
+                              disabled={isDeleting === String(doc.id)} aria-label={`Delete ${doc.title}`}
+                            >
+                              {isDeleting === String(doc.id) ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
+                            </Button>
+                          </AlertDialogTrigger>
+                          <AlertDialogContent>
+                            <AlertDialogHeader>
+                              <AlertDialogTitle>Are you sure you want to delete this document?</AlertDialogTitle>
+                              <AlertDialogDescription>
+                                This action cannot be undone.
+                              </AlertDialogDescription>
+                            </AlertDialogHeader>
+                            <AlertDialogFooter>
+                              <AlertDialogCancel disabled={isDeleting === String(doc.id)}>Cancel</AlertDialogCancel>
+                              <AlertDialogAction
+                                onClick={() => handleDeletePdf(doc.id, doc.title)}
+                                disabled={isDeleting === String(doc.id)}
+                                className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                              >
+                                {isDeleting === String(doc.id) ? "Deleting..." : "Delete"}
+                              </AlertDialogAction>
+                            </AlertDialogFooter>
+                          </AlertDialogContent>
+                        </AlertDialog>
                       </CardFooter>
                     </Card>
                   ))
@@ -824,12 +886,12 @@ export default function PDFReaderPage() {
                 {libraryDocuments
                   .filter((doc) => doc.category === "Uncategorized")
                   .map((doc) => (
-                    <Card key={doc.id} className="overflow-hidden group">
+                    <Card key={doc.id} className="overflow-hidden group flex flex-col">
                       <CardHeader className="p-4 pb-0">
                         <CardTitle className="text-base line-clamp-1">{doc.title}</CardTitle>
                         <CardDescription>{doc.category}</CardDescription>
                       </CardHeader>
-                      <CardContent className="p-4">
+                      <CardContent className="p-4 flex-grow">
                         <div className="flex justify-center mb-3 aspect-[3/4] bg-muted rounded-md overflow-hidden">
                           {doc.thumbnail ? (
                             <img src={doc.thumbnail} alt={doc.title} className="object-cover w-full h-full" />
@@ -839,16 +901,44 @@ export default function PDFReaderPage() {
                             </div>
                           )}
                         </div>
-                        <div className="flex justify-between text-sm text-muted-foreground">
-                          <span>{doc.pages} pages</span>
+                        <div className="flex justify-between text-sm text-muted-foreground mt-2">
+                          <span>{doc.pages ?? '?'} pages</span>
                           <span>Opened: {new Date(doc.lastOpened).toLocaleDateString()}</span>
                         </div>
                       </CardContent>
-                      <CardFooter className="border-t bg-muted/50 p-3">
-                        <Button size="sm" className="w-full" onClick={() => handleOpenPdf(doc.id)}>
+                      <CardFooter className="border-t bg-muted/50 p-3 flex gap-2">
+                        <Button size="sm" className="flex-1" onClick={() => handleOpenPdf(doc.id)}>
                           <BookOpen className="mr-2 h-4 w-4" />
                           Open
                         </Button>
+                        <AlertDialog>
+                          <AlertDialogTrigger asChild>
+                            <Button
+                              variant="destructive" size="sm" className="px-3"
+                              disabled={isDeleting === String(doc.id)} aria-label={`Delete ${doc.title}`}
+                            >
+                              {isDeleting === String(doc.id) ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
+                            </Button>
+                          </AlertDialogTrigger>
+                          <AlertDialogContent>
+                            <AlertDialogHeader>
+                              <AlertDialogTitle>Are you sure you want to delete this document?</AlertDialogTitle>
+                              <AlertDialogDescription>
+                                This action cannot be undone.
+                              </AlertDialogDescription>
+                            </AlertDialogHeader>
+                            <AlertDialogFooter>
+                              <AlertDialogCancel disabled={isDeleting === String(doc.id)}>Cancel</AlertDialogCancel>
+                              <AlertDialogAction
+                                onClick={() => handleDeletePdf(doc.id, doc.title)}
+                                disabled={isDeleting === String(doc.id)}
+                                className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                              >
+                                {isDeleting === String(doc.id) ? "Deleting..." : "Delete"}
+                              </AlertDialogAction>
+                            </AlertDialogFooter>
+                          </AlertDialogContent>
+                        </AlertDialog>
                       </CardFooter>
                     </Card>
                   ))}

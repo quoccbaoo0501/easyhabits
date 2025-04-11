@@ -1,40 +1,9 @@
 import { NextResponse } from 'next/server';
-import { writeFile } from 'fs/promises'; // Use Node.js filesystem API
+import { writeFile, mkdir } from 'fs/promises'; // Use Node.js filesystem API
 import path from 'path';
+import { supabase } from '@/lib/supabaseClient'; // Import Supabase client
 
-// In-memory store for documents (replace with DB)
-let documents = [
-  {
-    id: 1,
-    title: "Introduction to AI",
-    category: "Learning",
-    pages: 25,
-    lastOpened: new Date(Date.now() - 86400000 * 2).toISOString(),
-    thumbnail: "/placeholder.svg?height=120&width=90",
-    fileUrl: "/pdfs/intro-ai.pdf"
-  },
-  {
-    id: 2,
-    title: "Healthy Recipes",
-    category: "Health",
-    pages: 50,
-    lastOpened: new Date(Date.now() - 86400000 * 5).toISOString(),
-    thumbnail: "/placeholder.svg?height=120&width=90",
-    fileUrl: "/pdfs/healthy-recipes.pdf"
-  },
-    {
-    id: 3,
-    title: "Advanced React Patterns",
-    category: "Learning",
-    pages: 120,
-    lastOpened: new Date().toISOString(),
-    thumbnail: "/placeholder.svg?height=120&width=90",
-    fileUrl: "/pdfs/react-patterns.pdf"
-  },
-];
-
-// Simple counter for demo IDs (replace with DB auto-increment/UUID)
-let nextId = 4;
+// Removed in-memory store and nextId
 
 export async function POST(request: Request) {
   try {
@@ -51,51 +20,55 @@ export async function POST(request: Request) {
 
     // **Important Security Note:** In a real app, sanitize filenames and validate file types/sizes rigorously.
     const filename = Date.now() + '-' + file.name.replace(/\s+/g, '-'); // Basic sanitization
-    const filePath = path.join(process.cwd(), 'public', 'pdfs', filename);
+    const pdfsDir = path.join(process.cwd(), 'public', 'pdfs');
+    const filePath = path.join(pdfsDir, filename);
     const fileUrl = `/pdfs/${filename}`; // URL path to access the file
 
-    // Ensure the pdfs directory exists (important for the first upload)
-    // In a production setup, you might handle this differently (e.g., during build or startup)
+    // Ensure the pdfs directory exists
     try {
-      await require('fs/promises').mkdir(path.dirname(filePath), { recursive: true });
+      await mkdir(pdfsDir, { recursive: true });
     } catch (mkdirError: any) {
-      // Ignore error if directory already exists
-      if (mkdirError.code !== 'EEXIST') {
-        throw mkdirError; // Re-throw other errors
-      }
+      if (mkdirError.code !== 'EEXIST') throw mkdirError;
     }
 
-    // Read the file content as ArrayBuffer
+    // Read the file content and write to the public/pdfs directory
     const bytes = await file.arrayBuffer();
     const buffer = Buffer.from(bytes);
-
-    // Write the file to the public/pdfs directory
     await writeFile(filePath, buffer);
     console.log(`File saved to: ${filePath}`);
 
-    // **Placeholder PDF page count:** Replace with actual PDF processing if needed
-    const pages = Math.floor(Math.random() * 100) + 1; // Random for now
+    // **Placeholder PDF page count - Consider server-side PDF parsing here if needed**
+    const pages = null; // Or implement actual page counting
 
-    // Create new document metadata (simulating DB insert)
-    const newDocument = {
-      id: nextId++,
-      title,
-      category,
-      pages,
-      lastOpened: new Date().toISOString(),
-      thumbnail: "/placeholder.svg?height=120&width=90", // Use placeholder
-      fileUrl: fileUrl
-    };
+    // Insert metadata into Supabase 'documents' table
+    const { data: newDocument, error: insertError } = await supabase
+      .from('documents')
+      .insert({
+        title: title,
+        category: category,
+        fileUrl: fileUrl,
+        pages: pages, // Placeholder
+        thumbnail: '/images/pdf-2127829_1280.webp', // Set static thumbnail path
+        lastOpened: new Date().toISOString(), // Set initial lastOpened
+        // Supabase generates the UUID 'id' automatically
+      })
+      .select() // Return the newly created row
+      .single(); // Expect only one row back
 
-    documents.push(newDocument);
-    console.log("Updated documents list:", documents);
+    if (insertError) {
+      console.error("Error saving document metadata to Supabase:", insertError);
+      // Consider deleting the saved file if DB insert fails for consistency
+      return NextResponse.json({ error: "Failed to save document metadata", details: insertError.message }, { status: 500 });
+    }
 
-    // Return the newly created document metadata
+    console.log("Document metadata saved to Supabase:", newDocument);
+
+    // Return the newly created document record from Supabase
     return NextResponse.json(newDocument, { status: 201 });
 
-  } catch (error) {
-    console.error("Upload failed:", error);
-    return NextResponse.json({ error: "Upload failed" }, { status: 500 });
+  } catch (error: any) {
+    console.error("Upload error:", error);
+    return NextResponse.json({ error: "Upload failed", details: error.message }, { status: 500 });
   }
 }
 

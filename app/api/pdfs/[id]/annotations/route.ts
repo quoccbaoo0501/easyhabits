@@ -1,61 +1,150 @@
 import { NextResponse } from 'next/server';
+import { supabase } from '@/lib/supabaseClient'; // Import Supabase client
+import { unlink } from 'fs/promises'; // For deleting files
+import path from 'path';
 
-// Placeholder for annotations - replace with database logic
-let allAnnotations: { [pdfId: string]: any[] } = {
-  '1': [
-    { id: 'a1', page: 1, text: 'Important point on page 1', position: { x: 20, y: 30 }, pdfDocumentId: '1' },
-    { id: 'a2', page: 5, text: 'Reference this later', position: { x: 50, y: 50 }, pdfDocumentId: '1' },
-  ],
-  '2': [
-    { id: 'b1', page: 2, text: 'Recipe ingredient note', position: { x: 10, y: 70 }, pdfDocumentId: '2' },
-  ],
-  '3': [], // No annotations for PDF 3 yet
-};
+// Removed placeholder annotations
 
-// GET /api/pdfs/[id]/annotations?page=N
+// GET /api/pdfs/[id]/annotations
 export async function GET(request: Request, { params }: { params: { id: string } }) {
   const pdfId = params.id;
-  const { searchParams } = new URL(request.url);
-  const page = searchParams.get('page'); // Get page number from query parameters
+  // Removed page query param logic for now, fetching all for the document
 
-  console.log(`API: Fetching annotations for PDF ${pdfId}` + (page ? ` on page ${page}` : ''));
+  console.log(`API: Fetching annotations for PDF ${pdfId} from Supabase`);
 
-  // Simulate DB delay
-  await new Promise(resolve => setTimeout(resolve, 50));
+  const { data: annotations, error } = await supabase
+    .from('annotations')
+    .select('*')
+    .eq('pdfDocumentId', pdfId); // Use camelCase column name to match DB schema image
+    // Add .eq('page', pageNumber) if filtering by page
 
-  const pdfAnnotations = allAnnotations[pdfId] || [];
+  if (error) {
+    console.error('Error fetching annotations:', error);
+    return NextResponse.json({ error: 'Failed to fetch annotations', details: error.message }, { status: 500 });
+  }
 
-  // Filter by page if the 'page' query parameter is provided
-  const filteredAnnotations = page
-    ? pdfAnnotations.filter(anno => anno.page === parseInt(page, 10))
-    : pdfAnnotations;
-
-  return NextResponse.json(filteredAnnotations);
+  return NextResponse.json(annotations || []);
 }
 
 // POST /api/pdfs/[id]/annotations
 export async function POST(request: Request, { params }: { params: { id: string } }) {
   const pdfId = params.id;
-  const annotationData = await request.json(); // Annotation data from request body
 
-  console.log(`API: Saving annotation for PDF ${pdfId}:`, annotationData);
+  try {
+    const annotationData = await request.json(); // Annotation data from request body
 
-  // Simulate DB save
-  await new Promise(resolve => setTimeout(resolve, 100));
+    // Basic validation (add more as needed)
+    if (!annotationData.type || !annotationData.page) {
+        return NextResponse.json({ error: 'Missing required annotation fields (type, page)' }, { status: 400 });
+    }
+    if (annotationData.type === 'text' && (!annotationData.position || !annotationData.text)) {
+         return NextResponse.json({ error: 'Missing position or text for text annotation' }, { status: 400 });
+    }
+    if (annotationData.type === 'highlight' && !annotationData.rects) {
+        return NextResponse.json({ error: 'Missing rects for highlight annotation' }, { status: 400 });
+    }
 
-  if (!allAnnotations[pdfId]) {
-    allAnnotations[pdfId] = [];
+    console.log(`API: Saving annotation for PDF ${pdfId} to Supabase:`, annotationData);
+
+    const { data: newAnnotation, error: insertError } = await supabase
+      .from('annotations')
+      .insert({
+        pdfDocumentId: pdfId,
+        page: annotationData.page,
+        type: annotationData.type,
+        text: annotationData.text, // Will be null if type is 'highlight'
+        position: annotationData.position, // Will be null if type is 'highlight'
+        rects: annotationData.rects, // Will be null if type is 'text'
+      })
+      .select()
+      .single();
+
+    if (insertError) {
+      console.error("Error saving annotation to Supabase:", insertError);
+      return NextResponse.json({ error: "Failed to save annotation", details: insertError.message }, { status: 500 });
+    }
+
+    console.log("Annotation saved to Supabase:", newAnnotation);
+
+    // Return the saved annotation (including the new ID from Supabase)
+    return NextResponse.json(newAnnotation, { status: 201 }); // 201 Created status
+
+  } catch (error: any) {
+     console.error(`Error processing POST request for annotations (PDF ID: ${pdfId}):`, error);
+     // Check if the error is due to invalid JSON in the request body
+     if (error instanceof SyntaxError) {
+         return NextResponse.json({ error: 'Invalid JSON in request body' }, { status: 400 });
+     }
+     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
+}
 
-  // Generate a simple ID (in real app, DB would handle this)
-  const newAnnotation = {
-    ...annotationData,
-    id: `anno-${Date.now()}-${Math.random().toString(16).slice(2)}`,
-    pdfDocumentId: pdfId, // Ensure the PDF ID is set correctly
-  };
+export async function DELETE(request: Request, { params }: { params: { id: string } }) {
+    const pdfId = params.id;
+    console.log(`API: Request to delete PDF ID: ${pdfId}`);
 
-  allAnnotations[pdfId].push(newAnnotation);
+    if (!pdfId) {
+        return NextResponse.json({ error: 'Missing PDF ID' }, { status: 400 });
+    }
 
-  // Return the saved annotation (including the new ID)
-  return NextResponse.json(newAnnotation, { status: 201 }); // 201 Created status
+    try {
+        // 1. Fetch the document to get its fileUrl before deleting
+        const { data: document, error: fetchError } = await supabase
+            .from('documents')
+            .select('fileUrl')
+            .eq('id', pdfId)
+            .single(); // Use single() as we expect one or zero results
+
+        if (fetchError && fetchError.code !== 'PGRST116') { // PGRST116 = Row not found, which is okay if it's already gone
+            console.error(`Error fetching document ${pdfId} for deletion:`, fetchError);
+            return NextResponse.json({ error: "Failed to fetch document before deletion", details: fetchError.message }, { status: 500 });
+        }
+
+        // If document exists or existed, attempt DB deletion
+        if (document || (fetchError && fetchError.code === 'PGRST116')) {
+            // 2. Delete the document record from Supabase
+            // Annotations should be deleted automatically if ON DELETE CASCADE is set on the foreign key constraint.
+            const { error: deleteError } = await supabase
+                .from('documents')
+                .delete()
+                .eq('id', pdfId);
+
+            if (deleteError) {
+                console.error(`Error deleting document ${pdfId} from Supabase:`, deleteError);
+                // Don't proceed to delete file if DB deletion fails
+                return NextResponse.json({ error: "Failed to delete document from database", details: deleteError.message }, { status: 500 });
+            }
+            console.log(`Document ${pdfId} deleted from Supabase.`);
+        } else {
+             console.log(`Document ${pdfId} not found in Supabase, skipping DB deletion.`);
+        }
+
+
+        // 3. Delete the actual file from the filesystem if we found its URL
+        if (document?.fileUrl) {
+            const serverFilePath = path.join(process.cwd(), 'public', document.fileUrl);
+            try {
+                await unlink(serverFilePath);
+                console.log(`File deleted from filesystem: ${serverFilePath}`);
+            } catch (fileError: any) {
+                // Log error if file deletion fails, but don't necessarily fail the whole request
+                // if the DB entry was removed. Could be it was already deleted manually.
+                if (fileError.code === 'ENOENT') {
+                     console.warn(`File not found, could not delete: ${serverFilePath}`);
+                } else {
+                    console.error(`Error deleting file ${serverFilePath}:`, fileError);
+                     // You might choose to return an error here depending on desired behavior
+                }
+            }
+        } else {
+             console.log(`No fileUrl found for document ${pdfId}, skipping file deletion.`);
+        }
+
+        // 4. Return success response
+        return NextResponse.json({ message: `Document ${pdfId} deleted successfully` }, { status: 200 });
+
+    } catch (error: any) {
+        console.error(`Unexpected error deleting PDF ${pdfId}:`, error);
+        return NextResponse.json({ error: 'Internal server error during deletion' }, { status: 500 });
+    }
 } 
